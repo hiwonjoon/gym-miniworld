@@ -31,7 +31,10 @@ class Maze(MiniWorldEnv):
         # Allow only the movement actions
         self.action_space = spaces.Discrete(self.actions.move_forward+1)
 
-    def _gen_world(self):
+    def _gen_maze(self,maze_id=None):
+        np_random = np.random.RandomState()
+        np_random.seed(maze_id)
+
         rows = []
 
         # For each row
@@ -68,11 +71,10 @@ class Maze(MiniWorldEnv):
             """
 
             room = rows[j][i]
-
             visited.add(room)
 
             # Reorder the neighbors to visit in a random order
-            neighbors = self.rand.subset([(0,1), (0,-1), (-1,0), (1,0)], 4)
+            neighbors = np_random.permutation([(0,1), (0,-1), (-1,0), (1,0)])
 
             # For each possible neighbor
             for dj, di in neighbors:
@@ -97,7 +99,10 @@ class Maze(MiniWorldEnv):
                 visit(ni, nj)
 
         # Generate the maze starting from the top-left corner
-        visit(0, 0)
+        visit(np_random.randint(self.num_rows),np_random.randint(0,self.num_cols))
+
+    def _gen_world(self):
+        self._gen_maze()
 
         self.box = self.place_entity(Box(color='red'))
 
@@ -137,3 +142,81 @@ class MazeS3Fast(Maze):
             max_episode_steps=max_steps,
             domain_rand=False
         )
+
+
+class FDMaze(Maze):
+    def __init__(self, num_rows=2, num_cols=2, room_size=1, local_coord=False, **kwargs):
+        self.local_coord = local_coord
+        self._maze_id = None # changes everytime when this env is reset.
+
+        super(FDMaze, self).__init__(
+            num_rows,num_cols,room_size,
+            max_episode_steps=200,
+            window_width=600,
+            window_height=600,
+            **kwargs
+        )
+
+        self.action_space = spaces.Box(low=np.array([-1,-1]), high=np.array([1,1]), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=np.full((4,), -float('inf')),
+            high=np.full((4,), float('inf')),
+            dtype=np.float32
+        )
+
+    def _gen_world(self):
+        self._gen_maze(self._maze_id)
+
+        self.place_agent()
+        self.agent.radius = 0.1
+
+        self.init_x,_,self.init_y = self.agent.pos
+
+        self.init_pos = np.array([self.init_x,self.init_y])
+        self.v = np.array([0.,0.])
+
+    def inside(self,pos):
+        for r in self.rooms:
+            if r.point_inside(pos):
+                return True
+        return False
+
+    def _move(self):
+        next_pos = (self.agent.pos[0]+self.v[0],0.,self.agent.pos[2]+self.v[1])
+
+        if self.intersect(self.agent, next_pos, self.agent.radius):
+            self.v = np.array([0.,0.])
+        elif not self.inside(next_pos):
+            self.v = np.array([0.,0.])
+        else:
+            self.agent.pos = next_pos
+            self.agent.dir = np.arctan2(self.v[1],self.v[0])# + 3.1415
+
+    def _get_ob(self):
+        ob = np.array([self.agent.pos[0],self.agent.pos[2],self.v[0],self.v[1]],np.float32)
+        if self.local_coord:
+            ob[:2] -= self.init_pos
+
+        return ob
+
+    def reset(self,maze_id=None):
+        self._maze_id = maze_id
+        _ = super().reset()
+
+        return self._get_ob()
+
+    def step(self, action):
+        self.step_count += 1
+
+        coeff = 0.05
+        self.v = np.clip(self.v + coeff * action,-0.5,0.5)
+        self._move()
+
+        if self.step_count >= self.max_episode_steps:
+            done = True
+        else:
+            done = False
+
+        return self._get_ob(), 0.0, done, {}
+
+
